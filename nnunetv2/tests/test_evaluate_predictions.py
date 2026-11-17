@@ -269,7 +269,7 @@ class TestComputeMetricsOnFolder(unittest.TestCase):
                     np.testing.assert_allclose(result['mean'][r][m],
                                                np.nanmean([e[r][m] for e in per_case_expected]), rtol=1e-12)
             np.testing.assert_allclose(result['foreground_mean']['Dice'],
-                                       np.mean([result['mean'][r]['Dice'] for r in labels_or_regions]), rtol=1e-12)
+                                       np.nanmean([result['mean'][r]['Dice'] for r in labels_or_regions]), rtol=1e-12)
 
             loaded = load_summary_json(output_file)
             self.assertEqual(set(loaded['mean'].keys()), set(labels_or_regions))
