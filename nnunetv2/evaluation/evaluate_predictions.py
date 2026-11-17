@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Tuple, List, Union
 
 import numpy as np
+from scipy.ndimage import binary_erosion, distance_transform_edt
 from batchgenerators.utilities.file_and_folder_operations import subfiles, join, save_json, load_json, \
     isfile
 from nnunetv2.configuration import default_num_processes
@@ -174,6 +175,25 @@ def compute_tp_fp_fn_tn_for_labels_or_regions(seg_ref: np.ndarray, seg_pred: np.
     return counts
 
 
+def compute_surface_metrics(mask_ref: np.ndarray, mask_pred: np.ndarray, spacing) -> Tuple[float, float]:
+    """Voxel-surface HD95 (mm) and NSD at 2 mm, matching MONAI's default definitions.
+
+    Absent in both: NaN; absent in one: infinite HD95 and zero NSD.
+    HD95 is the maximum of the two directed 95th percentiles.
+    """
+    if not mask_ref.any() and not mask_pred.any():
+        return np.nan, np.nan
+    if not mask_ref.any() or not mask_pred.any():
+        return np.inf, 0.0
+    surface_ref = mask_ref & ~binary_erosion(mask_ref, border_value=0)
+    surface_pred = mask_pred & ~binary_erosion(mask_pred, border_value=0)
+    pred_to_ref = distance_transform_edt(~surface_ref, sampling=spacing)[surface_pred]
+    ref_to_pred = distance_transform_edt(~surface_pred, sampling=spacing)[surface_ref]
+    hd95 = max(np.percentile(pred_to_ref, 95), np.percentile(ref_to_pred, 95))
+    nsd = ((pred_to_ref <= 2).sum() + (ref_to_pred <= 2).sum()) / (pred_to_ref.size + ref_to_pred.size)
+    return float(hd95), float(nsd)
+
+
 def compute_metrics(reference_file: str, prediction_file: str, image_reader_writer: BaseReaderWriter,
                     labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
                     ignore_label: int = None) -> dict:
@@ -182,6 +202,10 @@ def compute_metrics(reference_file: str, prediction_file: str, image_reader_writ
     seg_pred, seg_pred_dict = image_reader_writer.read_seg(prediction_file)
 
     counts = compute_tp_fp_fn_tn_for_labels_or_regions(seg_ref, seg_pred, labels_or_regions, ignore_label)
+    spacing = seg_ref_dict['spacing']
+    if not np.allclose(spacing, seg_pred_dict['spacing']):
+        raise ValueError('Reference and prediction voxel spacing differ')
+    ignore_mask = seg_ref[0] == ignore_label if ignore_label is not None else None
 
     results = {}
     results['reference_file'] = reference_file
@@ -202,6 +226,15 @@ def compute_metrics(reference_file: str, prediction_file: str, image_reader_writ
         results['metrics'][r]['TN'] = tn
         results['metrics'][r]['n_pred'] = fp + tp
         results['metrics'][r]['n_ref'] = fn + tp
+        # Readers return (channel, spatial axes); spacing follows the spatial axes.
+        mask_ref = region_or_label_to_mask(seg_ref[0], r)
+        mask_pred = region_or_label_to_mask(seg_pred[0], r)
+        if ignore_mask is not None:
+            mask_ref[ignore_mask] = False
+            mask_pred[ignore_mask] = False
+        hd95, nsd = compute_surface_metrics(mask_ref, mask_pred, spacing)
+        results['metrics'][r]['HD95'] = hd95
+        results['metrics'][r]['NSD2mm'] = nsd
     return results
 
 
